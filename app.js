@@ -28,6 +28,112 @@ app.post('/voice', async (req, res) => {
   res.send(twiml.toString());
 });
 
+// Handle callback calls
+app.post('/handle-call', async (req, res) => {
+  const twiml = new twilio.twiml.VoiceResponse();
+  
+  // Welcome message
+  twiml.say({
+    voice: 'alice'
+  }, 'Welcome to the telehealth AI assistant. I will analyze your symptoms and provide preliminary medical guidance. Please describe your health concern after the beep.');
+  
+  // Record the user's health concern
+  twiml.record({
+    action: '/process-recording',
+    transcribe: false,
+    maxLength: 30,
+    playBeep: true,
+    timeout: 2
+  });
+  
+  res.type('text/xml');
+  res.send(twiml.toString());
+});
+
+// Process the recording
+app.post('/process-recording', async (req, res) => {
+  const twiml = new twilio.twiml.VoiceResponse();
+  
+  try {
+    // Get the recording URL
+    const recordingUrl = req.body.RecordingUrl;
+    
+    if (!recordingUrl) {
+      twiml.say('I did not receive a recording. Please try again later.');
+      res.type('text/xml');
+      return res.send(twiml.toString());
+    }
+    
+    console.log('Recording URL:', recordingUrl);
+    
+    // Fetch the audio file
+    const fetch = await import('node-fetch');
+    const response = await fetch.default(recordingUrl);
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    
+    // Convert to a readable stream for OpenAI
+    const { Readable } = await import('stream');
+    const audioStream = new Readable();
+    audioStream.push(buffer);
+    audioStream.push(null);
+    
+    // Import form-data
+    const FormData = await import('form-data');
+    const form = new FormData.default();
+    form.append('file', audioStream, {
+      filename: 'recording.wav',
+      contentType: 'audio/wav',
+    });
+    form.append('model', 'whisper-1');
+    
+    // Call OpenAI API directly
+    const openaiResponse = await fetch.default('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        ...form.getHeaders(),
+      },
+      body: form,
+    });
+    
+    if (!openaiResponse.ok) {
+      throw new Error(`OpenAI API error: ${openaiResponse.status} ${openaiResponse.statusText}`);
+    }
+    
+    const transcriptionResult = await openaiResponse.json();
+    const text = transcriptionResult.text;
+    
+    console.log('Transcription:', text);
+    
+    // Generate medical advice
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4-turbo',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a helpful telehealth assistant. Provide brief, accurate medical guidance based on symptoms described. Always include a disclaimer that this is not a replacement for professional medical advice.'
+        },
+        { role: 'user', content: text }
+      ],
+      max_tokens: 250,
+    });
+    
+    // Read the response to the user
+    const aiResponse = completion.choices[0].message.content;
+    twiml.say({
+      voice: 'alice'
+    }, aiResponse);
+    
+  } catch (error) {
+    console.error('Error processing recording:', error);
+    twiml.say('I apologize, but I encountered an error. Please try again later.');
+  }
+  
+  res.type('text/xml');
+  res.send(twiml.toString());
+});
+
 // Set up WebSocket server for streaming audio
 const http = require('http');
 const server = http.createServer(app);
