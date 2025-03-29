@@ -3,6 +3,30 @@ const twilio = require('twilio');
 const { OpenAI } = require('openai');
 require('dotenv').config();
 
+// Add this utility function for exponential backoff
+const retryWithExponentialBackoff = async (operation, maxRetries = 5) => {
+  let retries = 0;
+  while (true) {
+    try {
+      return await operation();
+    } catch (error) {
+      retries++;
+      if (retries > maxRetries || !error.message.includes('429')) {
+        throw error; // Rethrow if not a rate limit error or max retries reached
+      }
+      
+      // Calculate delay with exponential backoff and jitter
+      const delay = Math.min(
+        100 * Math.pow(2, retries) + Math.random() * 100,
+        2000 // Cap at 2 seconds max delay
+      );
+      
+      console.log(`Rate limited. Retrying in ${delay}ms (Attempt ${retries}/${maxRetries})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+};
+
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -66,16 +90,30 @@ app.post('/process-recording', async (req, res) => {
     
     console.log('Recording URL:', recordingUrl);
     
-    // Fetch the audio file
-    const fetch = await import('node-fetch');
-    const response = await fetch.default(recordingUrl);
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    // Fetch the audio file with retry
+    let response, arrayBuffer;
+    try {
+      const fetch = await import('node-fetch');
+      
+      // Use function to fetch with retry
+      const fetchData = async () => {
+        const resp = await fetch.default(recordingUrl);
+        const buffer = await resp.arrayBuffer();
+        return { response: resp, arrayBuffer: buffer };
+      };
+      
+      const result = await retryWithExponentialBackoff(fetchData);
+      response = result.response;
+      arrayBuffer = result.arrayBuffer;
+    } catch (fetchError) {
+      console.error("Error fetching audio:", fetchError);
+      throw fetchError;
+    }
     
     // Convert to a readable stream for OpenAI
     const { Readable } = await import('stream');
     const audioStream = new Readable();
-    audioStream.push(buffer);
+    audioStream.push(arrayBuffer);
     audioStream.push(null);
     
     // Import form-data
