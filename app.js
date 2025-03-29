@@ -93,11 +93,10 @@ app.post('/process-recording', async (req, res) => {
     // Fetch the audio file with retry
     let response, arrayBuffer;
     try {
-      const fetch = await import('node-fetch');
-      
       // Use function to fetch with retry
       const fetchData = async () => {
-        const resp = await fetch.default(recordingUrl);
+        const { default: nodeFetch } = await import('node-fetch');
+        const resp = await nodeFetch(recordingUrl);
         const buffer = await resp.arrayBuffer();
         return { response: resp, arrayBuffer: buffer };
       };
@@ -127,7 +126,8 @@ app.post('/process-recording', async (req, res) => {
     
     // Call OpenAI API directly with retry
     const transcriptionResult = await retryWithExponentialBackoff(async () => {
-      const openaiResponse = await fetch.default('https://api.openai.com/v1/audio/transcriptions', {
+      const { default: nodeFetch } = await import('node-fetch');
+      const openaiResponse = await nodeFetch('https://api.openai.com/v1/audio/transcriptions', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -215,26 +215,30 @@ wss.on('connection', (ws) => {
   // Process transcription with OpenAI for medical advice
   const processTranscription = async (text) => {
     try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a helpful telehealth assistant. Provide brief, accurate medical guidance based on symptoms described. Always include a disclaimer that this is not a replacement for professional medical advice.'
-          },
-          { role: 'user', content: text }
-        ],
-        max_tokens: 150,
+      const completion = await retryWithExponentialBackoff(async () => {
+        return openai.chat.completions.create({
+          model: 'gpt-3.5-turbo',
+          messages: [
+            {
+              role: 'system',
+              content: 'You are a helpful telehealth assistant. Provide brief, accurate medical guidance based on symptoms described. Always include a disclaimer that this is not a replacement for professional medical advice.'
+            },
+            { role: 'user', content: text }
+          ],
+          max_tokens: 150,
+        });
       });
       
       // Send the AI response back to the user
       const aiResponse = completion.choices[0].message.content;
       
       // Convert text to speech and send back to user
-      const audioResponse = await openai.audio.speech.create({
-        model: 'tts-1',
-        voice: 'alloy',
-        input: aiResponse,
+      const audioResponse = await retryWithExponentialBackoff(async () => {
+        return openai.audio.speech.create({
+          model: 'tts-1',
+          voice: 'alloy',
+          input: aiResponse,
+        });
       });
       
       // Convert audio buffer to base64 and send to client
