@@ -87,36 +87,41 @@ app.post('/process-recording', async (req, res) => {
     });
     form.append('model', 'whisper-1');
     
-    // Call OpenAI API directly
-    const openaiResponse = await fetch.default('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        ...form.getHeaders(),
-      },
-      body: form,
+    // Call OpenAI API directly with retry
+    const transcriptionResult = await retryWithExponentialBackoff(async () => {
+      const openaiResponse = await fetch.default('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          ...form.getHeaders(),
+        },
+        body: form,
+      });
+      
+      if (!openaiResponse.ok) {
+        throw new Error(`OpenAI API error: ${openaiResponse.status} ${openaiResponse.statusText}`);
+      }
+      
+      return openaiResponse.json();
     });
     
-    if (!openaiResponse.ok) {
-      throw new Error(`OpenAI API error: ${openaiResponse.status} ${openaiResponse.statusText}`);
-    }
-    
-    const transcriptionResult = await openaiResponse.json();
     const text = transcriptionResult.text;
     
     console.log('Transcription:', text);
     
-    // Generate medical advice
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4-turbo',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a helpful telehealth assistant. Provide brief, accurate medical guidance based on symptoms described. Always include a disclaimer that this is not a replacement for professional medical advice.'
-        },
-        { role: 'user', content: text }
-      ],
-      max_tokens: 250,
+    // Generate medical advice with retry
+    const completion = await retryWithExponentialBackoff(async () => {
+      return openai.chat.completions.create({
+        model: 'gpt-3.5-turbo', // Using a smaller model to reduce likelihood of rate limits
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a helpful telehealth assistant. Provide brief, accurate medical guidance based on symptoms described. Always include a disclaimer that this is not a replacement for professional medical advice.'
+          },
+          { role: 'user', content: text }
+        ],
+        max_tokens: 150, // Reducing tokens to stay within limits
+      });
     });
     
     // Read the response to the user
@@ -173,7 +178,7 @@ wss.on('connection', (ws) => {
   const processTranscription = async (text) => {
     try {
       const completion = await openai.chat.completions.create({
-        model: 'gpt-4-turbo',
+        model: 'gpt-3.5-turbo',
         messages: [
           {
             role: 'system',
