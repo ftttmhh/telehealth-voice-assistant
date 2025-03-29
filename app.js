@@ -113,7 +113,7 @@ app.post('/process-recording', async (req, res) => {
     // Convert to a readable stream for OpenAI
     const { Readable } = await import('stream');
     const audioStream = new Readable();
-    audioStream.push(arrayBuffer);
+    audioStream.push(Buffer.from(arrayBuffer));
     audioStream.push(null);
     
     // Import form-data
